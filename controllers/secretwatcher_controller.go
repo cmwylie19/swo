@@ -18,6 +18,7 @@ package controllers
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -99,10 +100,14 @@ func (r *SecretWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	// Check if the deployment already exists, if not create a new one
 	found := &appsv1.Deployment{}
+	port_int, err := strconv.Atoi(secretWatcher.Spec.Port)
+	if err != nil {
+		log.Error(err, "Failed to convert port to int")
+	}
 	err = r.Get(ctx, types.NamespacedName{Name: secretWatcher.Name, Namespace: secretWatcher.Namespace}, found)
 	if err != nil && errors.IsNotFound(err) {
 		// Define a new deployment
-		dep := r.newDeployment(secretWatcher)
+		dep := r.newDeployment(secretWatcher, port_int)
 		log.Info("Creating a new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
 		err = r.Create(ctx, dep)
 		if err != nil {
@@ -175,7 +180,7 @@ func (r *SecretWatcherReconciler) newServiceAccount(sw *apiv1alpha1.SecretWatche
 }
 
 // New secretwatcher deployment
-func (r *SecretWatcherReconciler) newDeployment(m *apiv1alpha1.SecretWatcher) *appsv1.Deployment {
+func (r *SecretWatcherReconciler) newDeployment(m *apiv1alpha1.SecretWatcher, port_int int) *appsv1.Deployment {
 	ls := labelsForSecretWatcher(m.Name)
 	replicas := m.Spec.Replicas
 	port := m.Spec.Port
@@ -202,11 +207,12 @@ func (r *SecretWatcherReconciler) newDeployment(m *apiv1alpha1.SecretWatcher) *a
 						Image:   "cmwylie19/secret-watcher:latest",
 						Name:    "secret-watcher",
 						Command: []string{"./secret-watcher", "server", "-p", port, "-l", label},
+
 						ReadinessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
 								HTTPGet: &corev1.HTTPGetAction{
 									Path: "/health",
-									Port: intstr.FromString("http"),
+									Port: intstr.FromInt(port_int),
 								},
 							},
 							InitialDelaySeconds: 5,
@@ -216,7 +222,7 @@ func (r *SecretWatcherReconciler) newDeployment(m *apiv1alpha1.SecretWatcher) *a
 							ProbeHandler: corev1.ProbeHandler{
 								HTTPGet: &corev1.HTTPGetAction{
 									Path: "/health",
-									Port: intstr.FromString("http"),
+									Port: intstr.FromInt(port_int),
 								},
 							},
 							InitialDelaySeconds: 5,

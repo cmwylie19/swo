@@ -18,6 +18,7 @@ package controllers
 
 import (
 	"context"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -46,6 +47,8 @@ type SecretWatcherReconciler struct {
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;
+//+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -74,7 +77,25 @@ func (r *SecretWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		log.Error(err, "Failed to get Memcached")
 		return ctrl.Result{}, err
 	}
-	log.Info("DOES THIS WORK?", "secretwatcher", secretWatcher)
+
+	// Check if ServiceAccount already exists, if not create a new one
+	serviceAccount := &corev1.ServiceAccount{}
+	err = r.Get(ctx, types.NamespacedName{Name: secretWatcher.Name, Namespace: secretWatcher.Namespace}, serviceAccount)
+	if err != nil && errors.IsNotFound(err) {
+		// Define a new ServiceAccount
+		serviceAccount = r.newServiceAccount(secretWatcher)
+		log.Info("Creating a new ServiceAccount", "ServiceAccount.Namespace", serviceAccount.Namespace, "ServiceAccount.Name", serviceAccount.Name)
+		err = r.Create(ctx, serviceAccount)
+		if err != nil {
+			log.Error(err, "Failed to create new ServiceAccount", "ServiceAccount.Namespace", serviceAccount.Namespace, "ServiceAccount.Name", serviceAccount.Name)
+			return ctrl.Result{}, err
+		}
+		// ServiceAccount created successfully - return and requeue
+		return ctrl.Result{Requeue: true}, nil
+	} else if err != nil {
+		log.Error(err, "Failed to get ServiceAccount")
+		return ctrl.Result{}, err
+	}
 
 	// Check if the deployment already exists, if not create a new one
 	found := &appsv1.Deployment{}
@@ -95,6 +116,32 @@ func (r *SecretWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
+	// Ensure the deployment size is the same as the spec
+	replicas := secretWatcher.Spec.Replicas
+	if *found.Spec.Replicas != replicas {
+		found.Spec.Replicas = &replicas
+		err = r.Update(ctx, found)
+		if err != nil {
+			log.Error(err, "Failed to update Deployment", "Deployment.Namespace", found.Namespace, "Deployment.Name", found.Name)
+			return ctrl.Result{}, err
+		}
+		// Spec updated - return and requeue
+		return ctrl.Result{RequeueAfter: time.Minute}, nil
+	}
+
+	// Ensure deployment has same label as the spec
+	label := secretWatcher.Spec.Label
+	if found.Spec.Template.Spec.Containers[0].Command[5] != label {
+		found.Spec.Template.Spec.Containers[0].Command[5] = label
+		err = r.Update(ctx, found)
+		if err != nil {
+			log.Error(err, "Failed to update Deployment", "Deployment.Namespace", found.Namespace, "Deployment.Name", found.Name)
+			return ctrl.Result{}, err
+		}
+		// Spec updated - return and requeue
+		return ctrl.Result{RequeueAfter: time.Minute}, nil
+	}
+
 	return ctrl.Result{}, nil
 }
 
@@ -109,6 +156,22 @@ func (r *SecretWatcherReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // Return labels for secretwatcher manifests
 func labelsForSecretWatcher(name string) map[string]string {
 	return map[string]string{"app": "secret-watcher", "secretwatcher_cr": name}
+}
+
+// New SecretWatcherServiceAccount
+func (r *SecretWatcherReconciler) newServiceAccount(sw *apiv1alpha1.SecretWatcher) *corev1.ServiceAccount {
+	labels := labelsForSecretWatcher(sw.Name)
+	return &corev1.ServiceAccount{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: metav1.SchemeGroupVersion.String(),
+			Kind:       "ServiceAccount",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      sw.Name,
+			Namespace: sw.Namespace,
+			Labels:    labels,
+		},
+	}
 }
 
 // New secretwatcher deployment

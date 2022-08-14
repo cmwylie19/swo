@@ -23,6 +23,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -46,10 +47,11 @@ type SecretWatcherReconciler struct {
 //+kubebuilder:rbac:groups=api.caseywylie.io,resources=secretwatchers/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=api.caseywylie.io,resources=secretwatchers/finalizers,verbs=update
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -79,6 +81,11 @@ func (r *SecretWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
+	port_int, port_err := strconv.Atoi(secretWatcher.Spec.Port)
+	if port_err != nil {
+		log.Error(port_err, "Failed to convert port to int")
+	}
+
 	// Check if ServiceAccount already exists, if not create a new one
 	serviceAccount := &corev1.ServiceAccount{}
 	err = r.Get(ctx, types.NamespacedName{Name: secretWatcher.Name, Namespace: secretWatcher.Namespace}, serviceAccount)
@@ -98,12 +105,65 @@ func (r *SecretWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
+	// Check if ClusterRole already exists, if not create a new one
+	clusterRole := &rbacv1.ClusterRole{}
+	err = r.Get(ctx, types.NamespacedName{Name: secretWatcher.Name, Namespace: secretWatcher.Namespace}, clusterRole)
+	if err != nil && errors.IsNotFound(err) {
+		// Define a new ClusterRole
+		clusterRole = r.newClusterRole(secretWatcher)
+		log.Info("Creating a new ClusterRole", "ClusterRole.Name", clusterRole.Name)
+		err = r.Create(ctx, clusterRole)
+		if err != nil {
+			log.Error(err, "Failed to create new ClusterRole", "ClusterRole.Name", clusterRole.Name)
+			return ctrl.Result{}, err
+		}
+		// ClusterRole created successfully - return and requeue
+		return ctrl.Result{Requeue: true}, nil
+	} else if err != nil {
+		log.Error(err, "Failed to get ClusterRole")
+		return ctrl.Result{}, err
+	}
+
+	// Check if ClusterRoleBinding already exists, if not create a new one
+	clusterRoleBinding := &rbacv1.ClusterRoleBinding{}
+	err = r.Get(ctx, types.NamespacedName{Name: secretWatcher.Name, Namespace: secretWatcher.Namespace}, clusterRoleBinding)
+	if err != nil && errors.IsNotFound(err) {
+		// Define a new ClusterRoleBinding
+		clusterRoleBinding = r.newClusterRoleBinding(secretWatcher)
+		log.Info("Creating a new ClusterRoleBinding", "ClusterRoleBinding.Name", clusterRoleBinding.Name)
+		err = r.Create(ctx, clusterRoleBinding)
+		if err != nil {
+			log.Error(err, "Failed to create new ClusterRoleBinding", "ClusterRoleBinding.Name", clusterRoleBinding.Name)
+			return ctrl.Result{}, err
+		}
+		// ClusterRoleBinding created successfully - return and requeue
+		return ctrl.Result{Requeue: true}, nil
+	} else if err != nil {
+		log.Error(err, "Failed to get ClusterRoleBinding")
+		return ctrl.Result{}, err
+	}
+
+	// Check if Service already exists, if not create a new one
+	service := &corev1.Service{}
+	err = r.Get(ctx, types.NamespacedName{Name: secretWatcher.Name, Namespace: secretWatcher.Namespace}, service)
+	if err != nil && errors.IsNotFound(err) {
+		// Define a new Service
+		service = r.newService(secretWatcher, port_int)
+		log.Info("Creating a new Service", "Service.Namespace", service.Namespace, "Service.Name", service.Name)
+		err = r.Create(ctx, service)
+		if err != nil {
+			log.Error(err, "Failed to create new Service", "Service.Namespace", service.Namespace, "Service.Name", service.Name)
+			return ctrl.Result{}, err
+		}
+		// Service created successfully - return and requeue
+		return ctrl.Result{Requeue: true}, nil
+	} else if err != nil {
+		log.Error(err, "Failed to get Service")
+		return ctrl.Result{}, err
+	}
+
 	// Check if the deployment already exists, if not create a new one
 	found := &appsv1.Deployment{}
-	port_int, err := strconv.Atoi(secretWatcher.Spec.Port)
-	if err != nil {
-		log.Error(err, "Failed to convert port to int")
-	}
 	err = r.Get(ctx, types.NamespacedName{Name: secretWatcher.Name, Namespace: secretWatcher.Namespace}, found)
 	if err != nil && errors.IsNotFound(err) {
 		// Define a new deployment
@@ -147,6 +207,18 @@ func (r *SecretWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{RequeueAfter: time.Minute}, nil
 	}
 
+	// Ensure deployment has same port as the spec
+	if found.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort != int32(port_int) {
+		found.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort = int32(port_int)
+		err = r.Update(ctx, found)
+		if err != nil {
+			log.Error(err, "Failed to update Deployment", "Deployment.Namespace", found.Namespace, "Deployment.Name", found.Name)
+			return ctrl.Result{}, err
+		}
+		// Spec updated - return and requeue
+		return ctrl.Result{RequeueAfter: time.Minute}, nil
+	}
+
 	return ctrl.Result{}, nil
 }
 
@@ -163,6 +235,32 @@ func labelsForSecretWatcher(name string) map[string]string {
 	return map[string]string{"app": "secret-watcher", "secretwatcher_cr": name}
 }
 
+// New Service for SecretWatcher
+func (r *SecretWatcherReconciler) newService(sw *apiv1alpha1.SecretWatcher, int_port int) *corev1.Service {
+	labels := labelsForSecretWatcher(sw.Name)
+	service := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      sw.Name,
+			Namespace: sw.Namespace,
+			Labels:    labels,
+		},
+		Spec: corev1.ServiceSpec{
+			Ports: []corev1.ServicePort{
+				{
+					Port: int32(int_port),
+					TargetPort: intstr.IntOrString{
+						IntVal: int32(int_port),
+					},
+				},
+			},
+			Selector: labels,
+		},
+	}
+	// Set SecretWatcher instance as the owner and controller
+	ctrl.SetControllerReference(sw, service, r.Scheme)
+	return service
+}
+
 // New SecretWatcherServiceAccount
 func (r *SecretWatcherReconciler) newServiceAccount(sw *apiv1alpha1.SecretWatcher) *corev1.ServiceAccount {
 	labels := labelsForSecretWatcher(sw.Name)
@@ -175,6 +273,57 @@ func (r *SecretWatcherReconciler) newServiceAccount(sw *apiv1alpha1.SecretWatche
 			Name:      sw.Name,
 			Namespace: sw.Namespace,
 			Labels:    labels,
+		},
+	}
+}
+
+// new ClusterRoleBinding for SecretWatcher
+func (r *SecretWatcherReconciler) newClusterRoleBinding(sw *apiv1alpha1.SecretWatcher) *rbacv1.ClusterRoleBinding {
+	labels := labelsForSecretWatcher(sw.Name)
+	return &rbacv1.ClusterRoleBinding{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: metav1.SchemeGroupVersion.String(),
+			Kind:       "ClusterRoleBinding",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      sw.Name,
+			Namespace: sw.Namespace,
+			Labels:    labels,
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      sw.Name,
+				Namespace: sw.Namespace,
+			},
+		},
+		RoleRef: rbacv1.RoleRef{
+			Kind:     "ClusterRole",
+			Name:     sw.Name,
+			APIGroup: "rbac.authorization.k8s.io",
+		},
+	}
+}
+
+// New ClusterRole
+func (r *SecretWatcherReconciler) newClusterRole(sw *apiv1alpha1.SecretWatcher) *rbacv1.ClusterRole {
+	labels := labelsForSecretWatcher(sw.Name)
+	return &rbacv1.ClusterRole{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: metav1.SchemeGroupVersion.String(),
+			Kind:       "ClusterRole",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      sw.Name,
+			Namespace: sw.Namespace,
+			Labels:    labels,
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{""},
+				Resources: []string{"secrets"},
+				Verbs:     []string{"get", "list", "watch"},
+			},
 		},
 	}
 }

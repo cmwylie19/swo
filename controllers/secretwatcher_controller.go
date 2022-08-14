@@ -194,30 +194,30 @@ func (r *SecretWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{RequeueAfter: time.Minute}, nil
 	}
 
-	// Ensure deployment has same label as the spec
-	label := secretWatcher.Spec.Label
-	if found.Spec.Template.Spec.Containers[0].Command[5] != label {
-		found.Spec.Template.Spec.Containers[0].Command[5] = label
-		err = r.Update(ctx, found)
-		if err != nil {
-			log.Error(err, "Failed to update Deployment", "Deployment.Namespace", found.Namespace, "Deployment.Name", found.Name)
-			return ctrl.Result{}, err
-		}
-		// Spec updated - return and requeue
-		return ctrl.Result{RequeueAfter: time.Minute}, nil
-	}
+	// // Ensure deployment has same label as the spec
+	// label := secretWatcher.Spec.Label
+	// if found.Spec.Template.Spec.Containers[0].Command[5] != label {
+	// 	found.Spec.Template.Spec.Containers[0].Command[5] = label
+	// 	err = r.Update(ctx, found)
+	// 	if err != nil {
+	// 		log.Error(err, "Failed to update Deployment", "Deployment.Namespace", found.Namespace, "Deployment.Name", found.Name)
+	// 		return ctrl.Result{}, err
+	// 	}
+	// 	// Spec updated - return and requeue
+	// 	return ctrl.Result{RequeueAfter: time.Minute}, nil
+	// }
 
-	// Ensure deployment has same port as the spec
-	if found.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort != int32(port_int) {
-		found.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort = int32(port_int)
-		err = r.Update(ctx, found)
-		if err != nil {
-			log.Error(err, "Failed to update Deployment", "Deployment.Namespace", found.Namespace, "Deployment.Name", found.Name)
-			return ctrl.Result{}, err
-		}
-		// Spec updated - return and requeue
-		return ctrl.Result{RequeueAfter: time.Minute}, nil
-	}
+	// // Ensure deployment has same port as the spec
+	// if found.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort != int32(port_int) {
+	// 	found.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort = int32(port_int)
+	// 	err = r.Update(ctx, found)
+	// 	if err != nil {
+	// 		log.Error(err, "Failed to update Deployment", "Deployment.Namespace", found.Namespace, "Deployment.Name", found.Name)
+	// 		return ctrl.Result{}, err
+	// 	}
+	// 	// Spec updated - return and requeue
+	// 	return ctrl.Result{RequeueAfter: time.Minute}, nil
+	// }
 
 	return ctrl.Result{}, nil
 }

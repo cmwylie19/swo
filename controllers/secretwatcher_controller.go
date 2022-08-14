@@ -351,7 +351,7 @@ func (r *SecretWatcherReconciler) newDeployment(m *apiv1alpha1.SecretWatcher, po
 					Labels: ls,
 				},
 				Spec: corev1.PodSpec{
-
+					ServiceAccountName: m.Name,
 					Containers: []corev1.Container{{
 						Image:   "cmwylie19/secret-watcher:latest",
 						Name:    "secret-watcher",
